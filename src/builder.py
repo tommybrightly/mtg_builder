@@ -87,28 +87,39 @@ def pick_for_bucket(cmdr, pool, bucket, need, used):
     return picks
 
 def pick_lands(cmdr, pool, desired, used):
-    lands = [c for c in pool if "Land" in (c.get("type_line") or "")]
+    # 1) grab all nonbasic lands in-color
+    nonbasics = [c for c in pool if "Land" in (c.get("type_line") or "") and not is_basic(c)]
     picks = []
-    # prefer non-basics first
-    for c in lands:
+
+    for c in nonbasics:
         if c["name"] in used:
             continue
-        # very light preference: avoid obvious taplands last; but keep it simple
         picks.append(c)
         used.add(c["name"])
         if len(picks) >= desired:
             return picks
 
-    # top up with basics from pool or standard names if present
-    basics_order = ["Forest", "Island", "Swamp", "Mountain", "Plains"]
-    for b in basics_order:
-        for c in _cards:
-            if c["name"] == b and c["name"] not in used:
-                picks.append(c)
-                used.add(c["name"])
-                if len(picks) >= desired:
-                    return picks
+    # 2) fill with basics, allowing multiples
+    basic_names = basics_for_ci(cmdr.get("color_identity") or [])
+    # fetch a template card obj for each basic we have in the pool (or all cards list)
+    basic_objs = []
+    for bn in basic_names:
+        c = _name_to_card.get(bn)
+        if c:
+            basic_objs.append(c)
+
+    if not basic_objs:
+        # nothing to add (unlikely if you listed at least one basic)
+        return picks
+
+    i = 0
+    while len(picks) < desired:
+        picks.append(basic_objs[i % len(basic_objs)])
+        # NOTE: do NOT add basics to "used" so they can repeat
+        i += 1
+
     return picks
+
 
 def build(commander_name):
     cmdr = resolve_commander(commander_name)
@@ -142,6 +153,11 @@ def build(commander_name):
         buckets["lands"] += pick_lands(cmdr, pool, extra, used)
         deck = [cmdr] + [c for k, v in buckets.items() for c in v]
         deck = deck[:100]
+        # top up with more basics
+        need = 100 - len(deck)
+        extra_basics = pick_lands(cmdr, [], need, used=set())  # only basics
+        deck += extra_basics[:need]
+
 
     return {"commander": [cmdr], "buckets": buckets, "deck": deck}
 
