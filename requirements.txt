@@ -1,0 +1,9 @@
+requests
+pandas
+numpy
+orjson
+faiss-cpu
+sentence-transformers
+rich
+tqdm
+typer[all]
