@@ -3,7 +3,7 @@ import pathlib
 import re
 import sys
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import orjson
 import requests
@@ -64,7 +64,7 @@ def scryfall_lookup(name: str) -> Dict[str, Any]:
     raise RuntimeError(f"Scryfall lookup failed for {name}")
 
 
-def tag_oracle(oracle_text: str) -> list[str]:
+def tag_oracle(oracle_text: str) -> List[str]:
     """Apply regex rules to tag card roles."""
     tags = set()
     for pat, tag in TAG_RULES:
