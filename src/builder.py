@@ -9,6 +9,24 @@ from src.rules import (
 )
 from src.retrieve import search as retrieve
 
+BASICS = {"Forest", "Island", "Swamp", "Mountain", "Plains", "Wastes"}
+
+def is_basic(card):
+    return card.get("name") in BASICS
+
+def basics_for_ci(ci):
+    # choose basics based on color identity
+    ci = set(ci or [])
+    order = []
+    if "G" in ci: order.append("Forest")
+    if "U" in ci: order.append("Island")
+    if "W" in ci: order.append("Plains")
+    if "B" in ci: order.append("Swamp")
+    if "R" in ci: order.append("Mountain")
+    if not order: order = ["Wastes"]
+    return order
+
+
 DATA = pathlib.Path("data")
 CARDS = DATA / "cards.jsonl"
 
