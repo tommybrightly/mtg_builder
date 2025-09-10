@@ -40,16 +40,21 @@ def resolve_commander(name):
         raise SystemExit("Commander '{}' not found in your pool (data/bulk.csv).".format(name))
     return c
 
-def filter_pool_for_commander(cmdr):
+def filter_pool_for_commander(cmdr, enforce_legality=True, enforce_color_id=True):
     ci = cmdr.get("color_identity") or []
     out = []
     for c in _cards:
         if c["name"] == cmdr["name"]:
             continue
-        if not legal_in_commander(c):
-            continue
-        if not within_color_identity(c, ci):
-            continue
+        if enforce_legality:
+            # skip banned or illegal-in-commander
+            if c.get("is_banned"):
+                continue
+            if not legal_in_commander(c):
+                continue
+        if enforce_color_id:
+            if not within_color_identity(c, ci):
+                continue
         if int(c.get("quantity") or 1) < 1:
             continue
         out.append(c)
@@ -121,9 +126,16 @@ def pick_lands(cmdr, pool, desired, used):
     return picks
 
 
-def build(commander_name):
+def build(commander_name, enforce_legality=True, enforce_color_id=True):
     cmdr = resolve_commander(commander_name)
-    pool = filter_pool_for_commander(cmdr)
+        # If strict mode and commander itself is illegal/banned, fail fast
+    if enforce_legality:
+        if cmdr.get("is_banned"):
+            raise SystemExit("Commander '{}' is banned (banlist). Use --no-legality to ignore.".format(cmdr["name"]))
+        if not legal_in_commander(cmdr):
+            raise SystemExit("Commander '{}' is not Commander-legal. Use --no-legality to ignore.".format(cmdr["name"]))
+
+    pool = filter_pool_for_commander(cmdr, enforce_legality=enforce_legality, enforce_color_id=enforce_color_id)
     targets = DEFAULT_BUCKET_TARGETS.copy()
 
     used = set([cmdr["name"]])
@@ -171,9 +183,18 @@ def summarize(deck):
     )
 
 if __name__ == "__main__":
-    import sys
-    commander = sys.argv[1] if len(sys.argv) > 1 else "Ezuri, Claw of Progress"
-    res = build(commander)
+    import sys, argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("commander")
+    p.add_argument("--no-legality", action="store_true", help="Ignore Commander legality and banlist.")
+    p.add_argument("--no-color-id", action="store_true", help="Ignore color identity restriction.")
+    args = p.parse_args()
+
+    res = build(
+        args.commander,
+        enforce_legality=not args.no_legality,
+        enforce_color_id=not args.no_color_id,
+    )
     deck = res["deck"]
     print(summarize(deck))
     out_txt = DATA / "decklist.txt"
@@ -181,3 +202,4 @@ if __name__ == "__main__":
         for c in deck:
             f.write("1 {}\n".format(c["name"]))
     print("Wrote {}".format(out_txt))
+

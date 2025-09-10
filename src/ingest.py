@@ -103,10 +103,9 @@ def main():
                 "collector_number": s.get("collector_number"),
                 "is_commander_legal": s.get("legalities", {}).get("commander") == "legal",
                 "tags": tag_oracle(s.get("oracle_text") or ""),
+                "is_banned": (s.get("name", name) in BANLIST),  # add this line
             }
 
-            if rec["name"] in BANLIST:
-                continue
 
             out.write(orjson.dumps(rec))
             out.write(b"\n")
