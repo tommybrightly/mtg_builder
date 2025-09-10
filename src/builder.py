@@ -203,7 +203,7 @@ def pick_lands(cmdr, pool, desired, used):
     return picks
 
 
-def build(commander_name, enforce_legality=True, enforce_color_id=True, explain=False, min_wincons=2, use_packages=True):
+def build(commander_name, enforce_legality=False, enforce_color_id=True, explain=True, min_wincons=2, use_packages=True):
     cmdr = resolve_commander(commander_name)
 
     if enforce_legality:
@@ -314,7 +314,6 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("commander")
     p.add_argument("--no-legality", action="store_true")
-    p.add_argument("--no-color-id", action="store_true")
     p.add_argument("--explain", action="store_true", help="Generate explanations and win-cons (uses Ollama if running).")
     p.add_argument("--min-wincons", type=int, default=2, help="Try to include at least this many win-con packages if present.")
     p.add_argument("--no-packages", action="store_true", help="Disable preselecting win-con packages.")
@@ -323,11 +322,10 @@ if __name__ == "__main__":
     res = build(
     args.commander,
     enforce_legality=not args.no_legality,
-    enforce_color_id=not args.no_color_id,
     explain=args.explain,
     min_wincons=args.min_wincons,
     use_packages=not args.no_packages,
-    )
+)
     deck = res["deck"]
     console.print("Score: {:.2f}  ".format(res["score"]), res["score_breakdown"])
     console.print("Win-Cons:")
