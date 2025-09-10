@@ -11,6 +11,8 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from src.scoring import score_deck
 from src.explain import explain_card, detect_wincons
+from src.packages import available_packages
+
 console = Console()
 
 BASICS = {"Forest", "Island", "Swamp", "Mountain", "Plains", "Wastes"}
@@ -44,6 +46,45 @@ def resolve_commander(name):
         raise SystemExit("Commander '{}' not found in your pool (data/bulk.csv).".format(name))
     return c
 
+
+def preselect_packages(cmdr, pool, used, desired_packages=2):
+    """
+    Try to include up to `desired_packages` win-con packages by selecting present package pieces.
+    Returns (chosen_cards, chosen_packages, tag_hints)
+    """
+    pool_names = {c["name"] for c in pool}
+    cands = available_packages(pool_names)
+    chosen_cards = []
+    chosen_pkgs = []
+    tag_hints = []
+
+    for pkg in cands:
+        if len(chosen_pkgs) >= desired_packages:
+            break
+        # pick one representative card (or more if you like) from cards_any
+        picked = False
+        for n in pkg.get("cards_any", []):
+            # include only if the card exists in pool and not already used
+            # (you can expand to include multiple from same package if available)
+            if n in pool_names and n not in used:
+                # find the card object
+                for c in pool:
+                    if c["name"] == n:
+                        chosen_cards.append(c)
+                        used.add(n)
+                        picked = True
+                        break
+            if picked:
+                break
+        if picked:
+            chosen_pkgs.append(pkg)
+            tag_hints.extend(pkg.get("tags_hint", []))
+        # if the package requires all cards_all, you could attempt to add them too
+
+    # dedupe tag hints
+    tag_hints = list(dict.fromkeys(tag_hints))
+    return chosen_cards, chosen_pkgs, tag_hints
+
 def filter_pool_for_commander(cmdr, enforce_legality=True, enforce_color_id=True):
     ci = cmdr.get("color_identity") or []
     out = []
@@ -73,6 +114,38 @@ def pick_for_bucket(cmdr, pool, bucket, need, used):
         hints.append("counters")
     if "token" in txt:
         hints.append("tokens")
+
+    tries = 0
+    while len(picks) < need and tries < 5:
+        q = "{} for {} commander; low cmc; synergy: {}".format(
+            bucket, "".join(cmdr.get("color_identity") or []), ",".join(hints)
+        )
+        for cand, score in retrieve(q, k=40):
+            if cand["name"] in used:
+                continue
+            if cand not in pool:
+                continue
+            b = bucket_of(cand)
+            if b == bucket or (bucket == "finishers" and b is None):
+                picks.append(cand)
+                used.add(cand["name"])
+                if len(picks) >= need:
+                    break
+        tries += 1
+        if len(picks) < need and tries >= 5:
+            break
+    return picks
+
+def pick_for_bucket_with_hints(cmdr, pool, bucket, need, used, extra_hints):
+    """Like pick_for_bucket, but biases queries using package tag hints."""
+    picks = []
+    hints = []
+    txt = (cmdr.get("oracle_text") or "").lower()
+    if "counter" in txt: hints.append("counters")
+    if "token" in txt: hints.append("tokens")
+    hints.extend(extra_hints or [])
+    # dedupe keep order
+    seen = set(); hints = [h for h in hints if not (h in seen or seen.add(h))]
 
     tries = 0
     while len(picks) < need and tries < 5:
@@ -130,7 +203,7 @@ def pick_lands(cmdr, pool, desired, used):
     return picks
 
 
-def build(commander_name, enforce_legality=True, enforce_color_id=True, explain=False):
+def build(commander_name, enforce_legality=True, enforce_color_id=True, explain=False, min_wincons=2, use_packages=True):
     cmdr = resolve_commander(commander_name)
 
     if enforce_legality:
@@ -159,6 +232,16 @@ def build(commander_name, enforce_legality=True, enforce_color_id=True, explain=
         targets = DEFAULT_BUCKET_TARGETS.copy()
         used = set([cmdr["name"]])
         buckets = dict((k, []) for k in targets.keys())
+
+            # --- NEW: preselect up to N wincon packages (if present) before filling buckets
+        extra_query_hints = []
+        if use_packages and min_wincons > 0:
+            pkg_cards, pkgs, hints = preselect_packages(cmdr, pool, used, desired_packages=min_wincons)
+        # place preselected cards into their natural buckets
+        for c in pkg_cards:
+            b = bucket_of(c) or "finishers"
+            buckets.setdefault(b, []).append(c)
+        extra_query_hints = hints
 
         # non-land buckets
         for b in ["ramp", "draw", "removal", "interaction", "finishers"]:
@@ -233,13 +316,17 @@ if __name__ == "__main__":
     p.add_argument("--no-legality", action="store_true")
     p.add_argument("--no-color-id", action="store_true")
     p.add_argument("--explain", action="store_true", help="Generate explanations and win-cons (uses Ollama if running).")
+    p.add_argument("--min-wincons", type=int, default=2, help="Try to include at least this many win-con packages if present.")
+    p.add_argument("--no-packages", action="store_true", help="Disable preselecting win-con packages.")
     args = p.parse_args()
 
     res = build(
-        args.commander,
-        enforce_legality=not args.no_legality,
-        enforce_color_id=not args.no_color_id,
-        explain=args.explain,
+    args.commander,
+    enforce_legality=not args.no_legality,
+    enforce_color_id=not args.no_color_id,
+    explain=args.explain,
+    min_wincons=args.min_wincons,
+    use_packages=not args.no_packages,
     )
     deck = res["deck"]
     console.print("Score: {:.2f}  ".format(res["score"]), res["score_breakdown"])
