@@ -2,7 +2,6 @@
 from __future__ import annotations
 import pathlib, orjson
 from collections import Counter
-
 from src.rules import (
     DEFAULT_BUCKET_TARGETS, within_color_identity, legal_in_commander,
     bucket_of, average_cmc,
@@ -10,6 +9,8 @@ from src.rules import (
 from src.retrieve import search as retrieve
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+from src.scoring import score_deck
+from src.explain import explain_card, detect_wincons
 console = Console()
 
 BASICS = {"Forest", "Island", "Swamp", "Mountain", "Plains", "Wastes"}
@@ -129,7 +130,7 @@ def pick_lands(cmdr, pool, desired, used):
     return picks
 
 
-def build(commander_name, enforce_legality=True, enforce_color_id=True):
+def build(commander_name, enforce_legality=True, enforce_color_id=True, explain=False):
     cmdr = resolve_commander(commander_name)
 
     if enforce_legality:
@@ -196,7 +197,24 @@ def build(commander_name, enforce_legality=True, enforce_color_id=True):
         extra_basics = pick_lands(cmdr, [], need, used=set())
         deck += extra_basics[:need]
 
-    return {"commander": [cmdr], "buckets": buckets, "deck": deck}
+        # compute bucket counts for scoring
+    bucket_counts = {k: len(v) for k, v in buckets.items()}
+    # pick up commander tags from its text (crude)
+    cmdr_tags = []
+    txt = (cmdr.get("oracle_text") or "").lower()
+    if "counter" in txt: cmdr_tags.append("counters")
+    if "token" in txt: cmdr_tags.append("tokens")
+
+    total_score, breakdown = score_deck(deck, bucket_counts, targets, cmdr_tags)
+
+    # explanations + wincons
+    explanations = {}
+    if explain:
+        for b, cards in buckets.items():
+            explanations[b] = [explain_card(c, cmdr, b, use_llm=True) for c in cards[:10]]  # limit output length
+    wincons = detect_wincons(deck)
+
+    return {"commander":[cmdr], "buckets":buckets, "deck":deck, "score":total_score, "score_breakdown":breakdown, "wincons":wincons, "explanations":explanations}
 
 
 def summarize(deck):
@@ -209,24 +227,47 @@ def summarize(deck):
     )
 
 if __name__ == "__main__":
-    import sys, argparse
+    import sys, argparse, pathlib
     p = argparse.ArgumentParser()
     p.add_argument("commander")
-    p.add_argument("--no-legality", action="store_true", help="Ignore Commander legality and banlist.")
-    p.add_argument("--no-color-id", action="store_true", help="Ignore color identity restriction.")
+    p.add_argument("--no-legality", action="store_true")
+    p.add_argument("--no-color-id", action="store_true")
+    p.add_argument("--explain", action="store_true", help="Generate explanations and win-cons (uses Ollama if running).")
     args = p.parse_args()
 
     res = build(
         args.commander,
         enforce_legality=not args.no_legality,
         enforce_color_id=not args.no_color_id,
+        explain=args.explain,
     )
     deck = res["deck"]
-    console.rule("[bold green]Deck build complete")
-    print(summarize(deck))
-    out_txt = DATA / "decklist.txt"
-    with open(out_txt, "w") as f:
+    console.print("Score: {:.2f}  ".format(res["score"]), res["score_breakdown"])
+    console.print("Win-Cons:")
+    for w in res["wincons"]:
+        console.print(" •", w)
+
+    # write files
+    DATA = pathlib.Path("data")
+    with open(DATA / "decklist.txt", "w") as f:
         for c in deck:
             f.write("1 {}\n".format(c["name"]))
-    print("Wrote to {}".format(out_txt))
+    if args.explain:
+        with open(DATA / "explanations.md", "w", encoding="utf-8") as f:
+            f.write("# Deck Explanations\n\n")
+            for b, exps in (res["explanations"] or {}).items():
+                if not exps: 
+                    continue
+                f.write(f"## {b.title()}\n")
+                for e in exps:
+                    f.write(f"- {e}\n")
+                f.write("\n")
+        with open(DATA / "wincons.md", "w", encoding="utf-8") as f:
+            f.write("# Win Conditions\n\n")
+            for w in res["wincons"]:
+                f.write(f"- {w}\n")
+    console.rule("[bold green]Deck build complete")
+    console.print("Wrote data/decklist.txt", style="green")
+    if args.explain:
+        console.print("Wrote data/explanations.md and data/wincons.md", style="green")
 
