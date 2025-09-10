@@ -85,7 +85,7 @@ def preselect_packages(cmdr, pool, used, desired_packages=2):
     tag_hints = list(dict.fromkeys(tag_hints))
     return chosen_cards, chosen_pkgs, tag_hints
 
-def filter_pool_for_commander(cmdr, enforce_legality=True, enforce_color_id=True):
+def filter_pool_for_commander(cmdr, enforce_legality=False, enforce_color_id=True):
     ci = cmdr.get("color_identity") or []
     out = []
     for c in _cards:
