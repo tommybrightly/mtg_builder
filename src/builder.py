@@ -8,6 +8,9 @@ from src.rules import (
     bucket_of, average_cmc,
 )
 from src.retrieve import search as retrieve
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+console = Console()
 
 BASICS = {"Forest", "Island", "Swamp", "Mountain", "Plains", "Wastes"}
 
@@ -128,50 +131,73 @@ def pick_lands(cmdr, pool, desired, used):
 
 def build(commander_name, enforce_legality=True, enforce_color_id=True):
     cmdr = resolve_commander(commander_name)
-        # If strict mode and commander itself is illegal/banned, fail fast
+
     if enforce_legality:
         if cmdr.get("is_banned"):
             raise SystemExit("Commander '{}' is banned (banlist). Use --no-legality to ignore.".format(cmdr["name"]))
         if not legal_in_commander(cmdr):
             raise SystemExit("Commander '{}' is not Commander-legal. Use --no-legality to ignore.".format(cmdr["name"]))
 
-    pool = filter_pool_for_commander(cmdr, enforce_legality=enforce_legality, enforce_color_id=enforce_color_id)
-    targets = DEFAULT_BUCKET_TARGETS.copy()
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
 
-    used = set([cmdr["name"]])
-    buckets = dict((k, []) for k in targets.keys())
+        t_filter = progress.add_task("Filtering pool…", total=None)
+        pool = filter_pool_for_commander(
+            cmdr,
+            enforce_legality=enforce_legality,
+            enforce_color_id=enforce_color_id
+        )
+        progress.update(t_filter, completed=1)
 
-    # non-land buckets first
-    for b in ["ramp", "draw", "removal", "interaction", "finishers"]:
-        need = targets.get(b, 0)
-        if need <= 0:
-            continue
-        picks = pick_for_bucket(cmdr, pool, b, need, used)
-        buckets[b] = picks
+        targets = DEFAULT_BUCKET_TARGETS.copy()
+        used = set([cmdr["name"]])
+        buckets = dict((k, []) for k in targets.keys())
 
-    # lands depend on how many we already have
-    nonland_count = sum(len(v) for k, v in buckets.items() if k != "lands") + 1  # + commander
-    desired_lands = max(35, 100 - nonland_count)
-    buckets["lands"] = pick_lands(cmdr, pool, desired_lands, used)
+        # non-land buckets
+        for b in ["ramp", "draw", "removal", "interaction", "finishers"]:
+            need = targets.get(b, 0)
+            if need <= 0:
+                continue
+            t_bucket = progress.add_task(f"Selecting {b} ({need})…", total=need)
+            picks = []
+            # pick_for_bucket will grab up to 'need' cards; we’ll advance as we go
+            # simple loop to track progress by length change
+            prev_len = 0
+            while len(picks) < need:
+                new_picks = pick_for_bucket(cmdr, pool, b, need - len(picks), used)
+                if not new_picks:
+                    break
+                picks.extend(new_picks)
+                progress.advance(t_bucket, len(picks) - prev_len)
+                prev_len = len(picks)
+            buckets[b] = picks
+            progress.update(t_bucket, completed=need)
 
-    # flatten
+        # lands depend on current nonlands
+        total_nonlands = sum(len(v) for k, v in buckets.items() if k != "lands") + 1  # + commander
+        desired_lands = max(35, 100 - total_nonlands)
+        t_lands = progress.add_task(f"Picking lands ({desired_lands})…", total=desired_lands)
+        lands = pick_lands(cmdr, pool, desired_lands, used)
+        buckets["lands"] = lands[:desired_lands]
+        progress.update(t_lands, completed=len(buckets["lands"]))
+
+    # flatten and adjust to 100
     deck = [cmdr] + [c for k, v in buckets.items() for c in v]
-
-    # Adjust to exactly 100 by trimming extra non-critical picks or adding basics if short
     if len(deck) > 100:
         deck = deck[:100]
     elif len(deck) < 100:
-        extra = 100 - len(deck)
-        buckets["lands"] += pick_lands(cmdr, pool, extra, used)
-        deck = [cmdr] + [c for k, v in buckets.items() for c in v]
-        deck = deck[:100]
-        # top up with more basics
         need = 100 - len(deck)
-        extra_basics = pick_lands(cmdr, [], need, used=set())  # only basics
+        extra_basics = pick_lands(cmdr, [], need, used=set())
         deck += extra_basics[:need]
 
-
     return {"commander": [cmdr], "buckets": buckets, "deck": deck}
+
 
 def summarize(deck):
     tags = Counter()
@@ -196,10 +222,11 @@ if __name__ == "__main__":
         enforce_color_id=not args.no_color_id,
     )
     deck = res["deck"]
+    console.rule("[bold green]Deck build complete")
     print(summarize(deck))
     out_txt = DATA / "decklist.txt"
     with open(out_txt, "w") as f:
         for c in deck:
             f.write("1 {}\n".format(c["name"]))
-    print("Wrote {}".format(out_txt))
+    print("Wrote to {}".format(out_txt))
 

@@ -4,8 +4,12 @@ import pathlib
 from typing import List
 import orjson
 import numpy as np
-
 from sentence_transformers import SentenceTransformer
+from rich.console import Console
+from rich.status import Status
+console = Console()
+
+
 
 # Try FAISS first; if unavailable, we'll fall back later.
 _FAISS_AVAILABLE = True
@@ -49,11 +53,11 @@ def build():
     texts = [blob(c) for c in cards]
     names = [c["name"] for c in cards]
 
-    print(f"[index] loading model: {MODEL_NAME}")
-    model = SentenceTransformer(MODEL_NAME)
-    print("[index] encoding cards -> embeddings...")
-    embs = model.encode(texts, normalize_embeddings=True, show_progress_bar=True)
-    embs = np.asarray(embs, dtype="float32")
+    with Status("[bold]Loading embedding model…[/bold]", console=console):
+        model = SentenceTransformer(MODEL_NAME)
+    with Status("[bold]Encoding cards…[/bold]", console=console):
+        embs = model.encode(texts, normalize_embeddings=True, show_progress_bar=True)
+        embs = np.asarray(embs, dtype="float32")
 
     # Save common artifacts
     np.save(EMB_NPY, embs)
@@ -79,6 +83,7 @@ def build():
     print(f"[index] wrote {EMB_NPY}")
     print(f"[index] wrote {NAMES_JSON}")
     print(f"[index] cards: {len(cards)} | dim: {embs.shape[1]}")
+
 
 
 if __name__ == "__main__":
