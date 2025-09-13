@@ -65,6 +65,68 @@ def run_one(commander: str, sleep=0.5):
     print(f"[ok] {commander}: {len(rows)} rows")
     time.sleep(sleep)
 
+def parse_cards(data: dict):
+    """
+    Return rows of (name, percent, synergy, section) from EDHREC JSON.
+    Handles multiple shapes: ...json_dict.cardlists[].cards|cardviews[]
+    and will recursively scan if needed.
+    """
+    rows = []
+
+    def add(label, card):
+        # handle both {"name","p","synergy"} and nested shapes
+        name = card.get("name") or card.get("card", {}).get("name")
+        if not name:
+            return
+        # percent "p" can be number or string
+        pct = card.get("p", card.get("percent", 0))
+        try:
+            pct = float(pct)
+        except Exception:
+            pct = 0.0
+        # synergy can be "synergy" or "synergyScore"
+        sy = card.get("synergy", card.get("synergyScore", 0))
+        try:
+            sy = float(sy)
+        except Exception:
+            sy = 0.0
+        rows.append((name, pct, sy, label or ""))
+
+    # primary path seen in most commanders
+    jd = (data.get("container") or {}).get("json_dict") or {}
+    cardlists = jd.get("cardlists") or []
+    for cl in cardlists:
+        label = cl.get("label", "")
+        # variant A
+        for c in cl.get("cards", []) or []:
+            add(label, c)
+        # variant B
+        for c in cl.get("cardviews", []) or []:
+            add(label, c)
+
+    if rows:
+        return rows  # got them the easy way
+
+    # Fallback: recursively walk the JSON and harvest any dicts that look like cards
+    def walk(node, current_label=""):
+        if isinstance(node, dict):
+            # keep track of nearest label-like field
+            lbl = node.get("label", current_label)
+            # candidates that look like cards
+            if "name" in node and ("p" in node or "percent" in node):
+                add(lbl, node)
+            if "name" in node and ("synergy" in node or "synergyScore" in node):
+                add(lbl, node)
+            for v in node.values():
+                walk(v, lbl)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, current_label)
+    walk(data)
+
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--commander")
