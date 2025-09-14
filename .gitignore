@@ -7,7 +7,7 @@ __pycache__/
 *.pyd
 .pytest_cache/
 .mypy_cache/
-.data
+data/
 
 # macOS
 .DS_Store
