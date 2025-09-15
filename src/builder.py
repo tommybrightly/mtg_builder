@@ -174,19 +174,37 @@ def build_deck(cmdr, pool):
 # ---------- optional CLI (requires your own loader) ----------
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 3:
-        print("Usage: python -m src.builder \"Commander Name\" path/to/bulk.csv")
+    import sys, json, os
+    if len(sys.argv) < 2:
+        print("Usage: python -m src.builder \"Commander Name\" [path\\to\\pool.json]")
         sys.exit(1)
-    commander_name = sys.argv[1]
-    bulk_csv = sys.argv[2]
 
-    pool = load_bulk_csv(bulk_csv)
-    cmdr = next((c for c in pool if c["name"] == commander_name), None)
+    commander_name = sys.argv[1]
+    pool_path = sys.argv[2] if len(sys.argv) >= 3 else os.path.join("data", "pool.json")
+
+    try:
+        pool = json.load(open(pool_path, "r", encoding="utf-8"))
+    except FileNotFoundError:
+        print(f"[error] Pool not found: {pool_path}. Generate it with tools\\load_bulk_csv.py.")
+        sys.exit(2)
+
+    # Try to find the commander in your bulk; if not present, use a minimal stub.
+    cmdr = next((c for c in pool if c.get("name") == commander_name), None)
     if not cmdr:
-        cmdr = {"name": commander_name, "color_identity": [], "type_line": "Legendary Creature"}
+        print(f"[warn] '{commander_name}' not found in pool; using minimal stub (color identity empty).")
+        cmdr = {"name": commander_name, "color_identity": [], "type_line": "Legendary Creature", "cmc": 0}
+
     deck = build_deck(cmdr, pool)
-    for i, c in enumerate(deck, 1):
-        print(f"{i:>2}  {c['name']}")
+
+    # Write a simple .txt decklist (1 copy of each)
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in commander_name)
+    outpath = os.path.join("data", f"deck_{safe}.txt")
+    with open(outpath, "w", encoding="utf-8") as f:
+        for c in deck:
+            f.write(f"1 {c['name']}\n")
+
+    print(f"[ok] Built deck for {commander_name}: {len(deck)} cards")
+    print(f"[ok] Wrote decklist -> {outpath}")
+
 
 
