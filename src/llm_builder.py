@@ -7,8 +7,12 @@ from .shortlist import shortlist
 
 ### 0) LLM call (fill this for your provider/library)
 import os, json, time, re
+from dotenv import load_dotenv
 from openai import OpenAI
 _oai_client = None
+
+# Load .env into environment variables
+load_dotenv()
 
 def _get_oai():
     global _oai_client
