@@ -6,22 +6,49 @@ from .rules import BUCKETS, TARGETS, desired_land_count, is_land, is_creature, w
 from .shortlist import shortlist
 
 ### 0) LLM call (fill this for your provider/library)
+import os, json, time, re
+from openai import OpenAI
+_oai_client = None
+
+def _get_oai():
+    global _oai_client
+    if _oai_client is None:
+        _oai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    return _oai_client
+
+def _extract_json(text: str) -> str:
+    # Be defensive: grab the first {...} block if the model adds extra text
+    m = re.search(r"\{[\s\S]*\}", text)
+    return m.group(0) if m else text
+
 def call_llm(system_msg: str, user_msg: str) -> str:
     """
-    Return the LLM string response. Keep it provider-agnostic here.
-    For OpenAI-like SDKs, you'd do: client.chat.completions.create(...).
+    Returns a JSON string (the model is prompted to return JSON only).
     """
-    raise NotImplementedError("Wire this to your LLM provider")
+    client = _get_oai()
+    # pick a small-but-smart model you have access to
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    for attempt in range(3):
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                temperature=0.2,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg + "\n\nReturn ONLY JSON."}
+                ],
+            )
+            text = resp.choices[0].message.content
+            # Ensure it's JSON
+            text = _extract_json(text)
+            # Validate JSON
+            json.loads(text)
+            return text
+        except Exception as e:
+            if attempt == 2:
+                raise
+            time.sleep(0.8 * (attempt + 1))
 
-JSON_INSTRUCTIONS = """
-Return JSON with this schema:
-{
-  "picks": ["Card Name 1", "Card Name 2", ...],    // EXACTLY N names from the shortlist
-  "explanation": "1 paragraph explaining your picks for this bucket and how it supports the commander.",
-  "win_conditions": ["short phrase 1", "short phrase 2"] // add only if this is the 'finishers' or 'creatures' bucket, else [].
-}
-Only return JSON, no prose.
-"""
 
 def llm_pick(commander: dict, bucket: str, shortlist_cards: List[dict], need: int) -> dict:
     names = [c["name"] for c in shortlist_cards]
