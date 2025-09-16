@@ -14,6 +14,80 @@ _oai_client = None
 # Load .env into environment variables
 load_dotenv()
 
+# --- Commander profile (LLM-inferred, cached) ---
+import os, json, re, pathlib, hashlib
+from .io_utils import load_pool
+from .rules import within_ci
+
+CACHE_DIR = pathlib.Path("data/cache/commander_profiles")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+JSON_INSTRUCTIONS = """
+Return strict JSON only, no commentary. 
+Format:
+{
+  "picks": ["Card A", "Card B", ...],   // exactly the requested number
+  "explanation": "Why these were chosen",
+  "win_conditions": ["Condition 1", "Condition 2"] // optional, may be empty
+}
+"""
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+","-", s.lower()).strip("-")
+
+def _profile_path(name: str) -> pathlib.Path:
+    return CACHE_DIR / f"{_slug(name)}.json"
+
+def infer_commander_profile(cmdr: dict) -> dict:
+    """
+    Use LLM once to infer subtypes/mechanics/gameplan from this commander's
+    type_line + oracle_text. Cache to data/cache/commander_profiles/.
+    """
+    p = _profile_path(cmdr["name"])
+    if p.exists():
+        try:
+            return json.load(open(p, "r", encoding="utf-8"))
+        except Exception:
+            pass
+
+    type_line = cmdr.get("type_line","")
+    oracle = cmdr.get("oracle_text","")
+    ci = "".join(cmdr.get("color_identity") or [])
+    sysmsg = (
+        "You are an MTG Commander analyst. Extract structured themes from a commander card. "
+        "Be concise and return strict JSON."
+    )
+    user = f"""
+Commander: {cmdr['name']}
+Type Line: {type_line}
+Oracle Text: {oracle}
+Color Identity: {ci}
+
+Return JSON with keys:
+{{
+  "preferred_subtypes": ["Angel","Demon","Dragon"],   // empty if none
+  "key_mechanics": ["cheat-into-play","tokens","spellslinger","equipment","graveyard","lifegain","artifacts","+1/+1 counters", ...],
+  "synergy_keywords": ["haste","flying","attack trigger","proliferate","sacrifice", ...],
+  "gameplan": "1-2 sentence summary",
+  "exclusions": ["things that DON'T fit, optional"]
+}}
+Only JSON, no prose.
+"""
+    out = call_llm(sysmsg, user)
+    try:
+        data = json.loads(out)
+    except Exception:
+        data = {
+            "preferred_subtypes": [],
+            "key_mechanics": [],
+            "synergy_keywords": [],
+            "gameplan": "",
+            "exclusions": []
+        }
+    json.dump(data, open(p, "w", encoding="utf-8"))
+    return data
+
+
 def _get_oai():
     global _oai_client
     if _oai_client is None:
@@ -64,7 +138,7 @@ You must pick EXACTLY {need} cards FROM THIS SHORTLIST ONLY (do not invent names
 Shortlist:
 {json.dumps(names, ensure_ascii=False, indent=2)}
 
-{JSON_INSTRUCTIONS}
+
 """
     sysmsg = "You are a helpful MTG Commander deck assistant. Respect color identity and only choose from the provided shortlist."
     out = call_llm(sysmsg, user).strip()
@@ -83,31 +157,56 @@ Shortlist:
 
 def build_deck(commander_name: str, pool_path="data/pool.json"):
     pool = load_pool(pool_path)
-    # try to find commander in pool; stub CI from known colors if needed
-    cmdr = next((c for c in pool if c["name"] == commander_name), {"name": commander_name, "color_identity": [], "type_line": "Legendary Creature"})
+    cmdr = next((c for c in pool if c["name"] == commander_name),
+                {"name": commander_name, "color_identity": [], "type_line": "Legendary Creature", "oracle_text": ""})
+
+    # ensure commander colors if missing (you can keep your Scryfall fill here if you have it)
     if not cmdr.get("color_identity"):
-        # simple local patch: infer from known legends you run; or hardcode for tests
-        KNOWN = {"Kaalia of the Vast":["W","B","R"]}
-        cmdr["color_identity"] = KNOWN.get(cmdr["name"], cmdr.get("color_identity", []))
+        cmdr["color_identity"] = cmdr.get("color_identity", [])
+
+    profile = infer_commander_profile(cmdr)  # <--- NEW
 
     used = set([cmdr["name"]])
-    buckets = {b:[] for b in BUCKETS}
+    buckets = {b: [] for b in BUCKETS}
     explanations = []
 
-    # non-lands first
     for b in ["creatures","ramp","draw","removal","interaction","finishers"]:
         need = TARGETS[b]
-        sl = shortlist(cmdr, [c for c in pool if c["name"] not in used], b, k=max(need*4, 30))
+        sl = shortlist(cmdr, [c for c in pool if c["name"] not in used], b, k=max(need*4, 30), profile=profile)
         if not sl:
             continue
-        data = llm_pick(cmdr, b, sl, need)
-        picks = [c for c in sl if c["name"] in set(data["picks"])]
-        for p in picks: used.add(p["name"])
-        buckets[b] = picks
-        if data.get("explanation"):
-            explanations.append(f"### {b.capitalize()}\n{data['explanation']}")
+
+        # Include profile context in the user message to the LLM
+        names = [c["name"] for c in sl]
+        user = f"""
+Commander: {cmdr['name']} (CI: {''.join(cmdr.get('color_identity') or [])})
+Commander profile: {json.dumps(profile, ensure_ascii=False)}
+Bucket: {b}
+Pick EXACTLY {need} cards from this shortlist only:
+{json.dumps(names, ensure_ascii=False, indent=2)}
+{JSON_INSTRUCTIONS}
+"""
+        sysmsg = (
+            "You are an MTG Commander deck assistant.\n"
+            "- NEVER pick cards outside color identity (already filtered in shortlist).\n"
+            "- ONLY pick from the shortlist; do not invent names.\n"
+            "- Use the commander profile to prefer synergistic choices.\n"
+            "- Output JSON ONLY."
+        )
+        out = call_llm(sysmsg, user)
+        try:
+            data = json.loads(out)
+            picks = set(data.get("picks") or [])
+        except Exception:
+            picks = set(names[:need])
+            data = {"explanation": "Fallback to shortlist tops.", "win_conditions": []}
+
+        chosen = [c for c in sl if c["name"] in picks][:need]
+        for p in chosen: used.add(p["name"])
+        buckets[b] = chosen
+        if data.get("explanation"): explanations.append(f"### {b.capitalize()}\n{data['explanation']}")
         if data.get("win_conditions") and b in ("creatures","finishers"):
-            explanations.append(f"- Win cons: " + "; ".join(data["win_conditions"]))
+            explanations.append("- Win cons: " + "; ".join(data["win_conditions"]))
 
     # lands heuristic from curve + ramp
     nonlands = [c for b in BUCKETS if b!="lands" for c in buckets[b]]
