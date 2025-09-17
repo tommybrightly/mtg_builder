@@ -1,7 +1,7 @@
 # src/rules.py
 from typing import List, Dict
 
-BUCKETS = ["creatures","ramp","draw","removal","interaction","finishers"]
+BUCKETS = ["creatures","ramp","lands","draw","removal","interaction","finishers"]
 TARGETS = {"lands": 36, "creatures": 28, "ramp": 10, "draw": 10, "removal": 8, "interaction": 4, "finishers": 2}
 
 def within_ci(card, commander_ci):

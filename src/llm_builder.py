@@ -58,10 +58,10 @@ def infer_commander_profile(cmdr: dict) -> dict:
         "Be concise and return strict JSON."
     )
     user = f"""
-Commander: {cmdr['name']}
-Type Line: {type_line}
-Oracle Text: {oracle}
-Color Identity: {ci}
+    Commander: {cmdr['name']}
+    Type Line: {type_line}
+    Oracle Text: {oracle}
+    Color Identity: {ci}
 
 Return JSON with keys:
 {{
@@ -155,6 +155,13 @@ Shortlist:
     data["picks"] = picks
     return data
 
+# show deck composition
+def _counts(buckets):
+    keys = ["creatures","ramp","lands","draw","removal","interaction","finishers"]
+    return {k: len(buckets.get(k, [])) for k in keys}
+
+
+
 def build_deck(commander_name: str, pool_path="data/pool.json"):
     pool = load_pool(pool_path)
     cmdr = next((c for c in pool if c["name"] == commander_name),
@@ -179,18 +186,19 @@ def build_deck(commander_name: str, pool_path="data/pool.json"):
         # Include profile context in the user message to the LLM
         names = [c["name"] for c in sl]
         user = f"""
-Commander: {cmdr['name']} (CI: {''.join(cmdr.get('color_identity') or [])})
-Commander profile: {json.dumps(profile, ensure_ascii=False)}
-Bucket: {b}
-Pick EXACTLY {need} cards from this shortlist only:
-{json.dumps(names, ensure_ascii=False, indent=2)}
-{JSON_INSTRUCTIONS}
-"""
+    Commander: {cmdr['name']} (CI: {''.join(cmdr.get('color_identity') or [])})
+    Commander profile: {json.dumps(profile, ensure_ascii=False)}
+    Bucket: {b}
+    Pick EXACTLY {need} cards from this shortlist only:
+    {json.dumps(names, ensure_ascii=False, indent=2)}
+    {JSON_INSTRUCTIONS}
+    """
         sysmsg = (
             "You are an MTG Commander deck assistant.\n"
             "- NEVER pick cards outside color identity (already filtered in shortlist).\n"
             "- ONLY pick from the shortlist; do not invent names.\n"
             "- Use the commander profile to prefer synergistic choices.\n"
+            "- Choose creatures with high power and toughness over low power and toughness\n"
             "- Output JSON ONLY."
         )
         out = call_llm(sysmsg, user)
@@ -228,10 +236,18 @@ Pick EXACTLY {need} cards from this shortlist only:
         fillers = fillers[:need]
         deck += fillers
 
+
+
     # write files
     deck_path = write_decklist(cmdr["name"], deck, out_dir="data")
     exp_path  = write_explanations(cmdr["name"], "\n\n".join(explanations) or "Builder v1 explanations.", out_dir="data")
+
+    # printing composition
+    print("[comp]", _counts(buckets) | {"total": len(deck)})
     return deck_path, exp_path
+    
+
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -240,5 +256,6 @@ if __name__ == "__main__":
     name = sys.argv[1]
     poolp = sys.argv[2] if len(sys.argv) >= 3 else "data/pool.json"
     dp, ep = build_deck(name, poolp)
+    print()
     print(f"[ok] wrote {dp}")
     print(f"[ok] wrote {ep}")
