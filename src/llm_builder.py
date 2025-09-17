@@ -3,7 +3,7 @@ import json, sys, math
 from typing import List
 from .io_utils import load_pool, write_decklist, write_explanations
 from .rules import BUCKETS, TARGETS, desired_land_count, is_land, is_creature, within_ci
-from .shortlist import shortlist
+from .shortlist import shortlist, bucket_of
 
 ### 0) LLM call (fill this for your provider/library)
 import os, json, time, re
@@ -235,6 +235,16 @@ def build_deck(commander_name: str, pool_path="data/pool.json"):
         fillers.sort(key=lambda c: (0 if is_creature(c) else 1, float(c.get("cmc") or 10.0)))
         fillers = fillers[:need]
         deck += fillers
+
+    # after computing `fillers` and before `deck += fillers`
+    for c in fillers:
+        if "Land" in (c.get("type_line") or ""):
+            b = "lands"
+        elif "Creature" in (c.get("type_line") or ""):
+            b = "creatures"
+        else:
+            b = bucket_of(c) or "interaction"  # sensible default bucket for misc
+        buckets[b] = buckets.get(b, []) + [c]
 
 
 
